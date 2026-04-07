@@ -16,6 +16,7 @@ import {
   ChevronRight,
   Phone,
   Languages,
+  ArrowLeft,
 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -44,6 +45,7 @@ import {
   mountSumUpCard,
   formatCurrency,
   detectCountryFromIP,
+  preloadSumUpSDK,
 } from '@/lib/checkout-api';
 
 // ─── Debounce Hook ──────────────────────────────────────────────────────────────
@@ -237,6 +239,7 @@ export default function CheckoutPage() {
   const [saving, setSaving] = useState(false);
   const [paying, setPaying] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
+  const cleanupRef = useRef<(() => void) | null>(null);
 
   // ─── Detect language from IP on mount ────────────────────────────────────────
   useEffect(() => {
@@ -248,30 +251,48 @@ export default function CheckoutPage() {
         setLocale(detected);
       }
     });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // ─── Preload SumUp SDK as soon as page loads ────────────────────────────────
+  useEffect(() => {
+    preloadSumUpSDK();
   }, []);
 
   // ─── Fetch session when txId is present ──────────────────────────────────────
+  // Note: initial phase is already set to 'loading' in the useState initializer.
+  // This effect only runs on mount (txId won't change at runtime).
   useEffect(() => {
     if (!txId) return;
+
     let cancelled = false;
+
     fetchCheckoutSession(txId)
       .then((data) => {
         if (!cancelled) {
+          // Session loaded successfully — always transition to 'form'
           setSession(data);
           setPhase('form');
         }
       })
-      .catch(() => {
+      .catch((err) => {
         if (!cancelled) {
+          console.error('[Checkout] Failed to load session:', err);
           setPhase('error');
-          setErrorMsg(tr.sessionExpiredMsg);
+          setErrorMsg(
+            err instanceof Error
+              ? err.message
+              : 'This checkout session could not be loaded. Please check the link or contact the merchant.'
+          );
         }
       });
+
     return () => {
       cancelled = true;
     };
-  }, [txId, tr.sessionExpiredMsg]);
+  }, [txId]);
 
   // ─── Auto-save with debounce ─────────────────────────────────────────────────
   const debouncedSave = useDebouncedCallback(
@@ -326,31 +347,49 @@ export default function CheckoutPage() {
 
       if (result.provider === 'sumup' && result.checkout_id) {
         setPhase('external_payment');
+
+        // Small delay to let the container render before mounting
         setTimeout(() => {
-          mountSumUpCard(
+          const cleanup = mountSumUpCard(
             result.checkout_id!,
             'sumup-card-container',
             () => {
               setPaying(false);
             },
             (err) => {
+              console.error('[Checkout] SumUp mount error:', err);
               setPhase('form');
               setPaying(false);
               setErrorMsg(err);
             }
           );
-        }, 100);
+          cleanupRef.current = cleanup;
+        }, 150);
       } else if (result.provider === 'stripe' && result.redirect_url) {
         setPhase('processing');
         setTimeout(() => {
           window.location.href = result.redirect_url!;
         }, 800);
+      } else {
+        setPaying(false);
+        setErrorMsg('Unsupported payment provider configuration.');
       }
-    } catch {
+    } catch (err) {
+      console.error('[Checkout] Payment initiation error:', err);
       setPaying(false);
       setErrorMsg(tr.paymentFailedMsg);
     }
   }, [session, form, tr.paymentFailedMsg]);
+
+  // ─── Cancel SumUp payment ───────────────────────────────────────────────────
+  const handleCancelPayment = useCallback(() => {
+    if (cleanupRef.current) {
+      cleanupRef.current();
+      cleanupRef.current = null;
+    }
+    setPhase('form');
+    setPaying(false);
+  }, []);
 
   // ─── Retry from error ───────────────────────────────────────────────────────
   const handleRetry = useCallback(() => {
@@ -364,17 +403,28 @@ export default function CheckoutPage() {
         })
         .catch(() => {
           setPhase('error');
-          setErrorMsg(tr.sessionExpiredShort);
+          setErrorMsg('This checkout session is invalid or has expired.');
         });
     } else {
       setSession(MOCK_SESSION);
       setPhase('form');
     }
-  }, [txId, tr.sessionExpiredShort]);
+  }, [txId]);
 
-  // ─── Dynamic branding colors ─────────────────────────────────────────────────
+  // ─── Cleanup on unmount ─────────────────────────────────────────────────────
+  useEffect(() => {
+    return () => {
+      if (cleanupRef.current) {
+        cleanupRef.current();
+        cleanupRef.current = null;
+      }
+    };
+  }, []);
+
+  // ─── Dynamic branding colors (safe with defaults) ────────────────────────────
   const brandColor = session?.branding?.primary_color ?? '#0a0a0a';
   const accentColor = session?.branding?.accent_color ?? '#f5f5f5';
+  const logoUrl = session?.branding?.logo_url ?? '';
   const currencyLocale = CURRENCY_LOCALES[locale] ?? 'en-US';
 
   // ─── Render by phase ─────────────────────────────────────────────────────────
@@ -385,7 +435,10 @@ export default function CheckoutPage() {
   if (!session) return null;
 
   return (
-    <div className="min-h-screen bg-gray-50/80" style={{ '--brand': brandColor, '--brand-accent': accentColor } as React.CSSProperties}>
+    <div
+      className="min-h-screen bg-gray-50/80"
+      style={{ '--brand': brandColor, '--brand-accent': accentColor } as React.CSSProperties}
+    >
       <div className="mx-auto max-w-5xl px-4 py-6 md:py-12 lg:py-16">
         {/* Header */}
         <motion.div
@@ -417,27 +470,45 @@ export default function CheckoutPage() {
               exit={{ opacity: 0 }}
               className="mx-auto max-w-lg rounded-2xl border border-gray-200 bg-white p-6 shadow-sm md:p-10"
             >
+              {/* Back button */}
+              <button
+                onClick={handleCancelPayment}
+                className="mb-6 flex items-center gap-1.5 text-sm text-gray-500 transition-colors hover:text-gray-900"
+              >
+                <ArrowLeft className="h-4 w-4" />
+                {tr.cancelAndGoBack}
+              </button>
+
+              {/* Merchant header */}
               <div className="mb-6 flex items-center gap-3">
-                {session.branding.logo_url && (
+                {logoUrl && (
                   <img
-                    src={session.branding.logo_url}
+                    src={logoUrl}
                     alt={session.merchant_name}
                     className="h-8 w-auto object-contain"
                   />
                 )}
                 <span className="text-sm font-medium text-gray-700">{session.merchant_name}</span>
               </div>
+
               <h2 className="mb-1 text-lg font-semibold text-gray-900">{tr.completePayment}</h2>
               <p className="mb-6 text-sm text-gray-500">
                 {formatCurrency(session.amount, session.currency, currencyLocale)}
               </p>
-              <div id="sumup-card-container" className="min-h-[300px]" />
-              <button
-                onClick={() => { setPhase('form'); setPaying(false); }}
-                className="mt-4 text-xs text-gray-400 hover:text-gray-600 underline"
-              >
-                {tr.cancelAndGoBack}
-              </button>
+
+              {/* SumUp card container */}
+              <div
+                id="sumup-card-container"
+                className="min-h-[300px] rounded-xl border border-gray-100 bg-gray-50 p-4"
+              />
+
+              {/* Loading indicator while SumUp loads */}
+              {paying && (
+                <div className="mt-4 flex items-center justify-center gap-2 text-sm text-gray-400">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  {tr.processing}
+                </div>
+              )}
             </motion.div>
           ) : (
             <motion.div
@@ -475,10 +546,7 @@ export default function CheckoutPage() {
                         value={form.customer_name}
                         onChange={(e) => handleFieldChange('customer_name', e.target.value)}
                         className="h-11 rounded-lg text-sm transition-shadow focus-visible:ring-[3px]"
-                        style={{
-                          // @ts-expect-error CSS custom property
-                          '--tw-ring-color': `${brandColor}40`,
-                        }}
+                        style={{ '--tw-ring-color': `${brandColor}40` } as React.CSSProperties}
                         autoComplete="name"
                       />
                     </div>
@@ -496,10 +564,7 @@ export default function CheckoutPage() {
                         value={form.customer_email}
                         onChange={(e) => handleFieldChange('customer_email', e.target.value)}
                         className="h-11 rounded-lg text-sm transition-shadow focus-visible:ring-[3px]"
-                        style={{
-                          // @ts-expect-error CSS custom property
-                          '--tw-ring-color': `${brandColor}40`,
-                        }}
+                        style={{ '--tw-ring-color': `${brandColor}40` } as React.CSSProperties}
                         autoComplete="email"
                       />
                     </div>
@@ -517,10 +582,7 @@ export default function CheckoutPage() {
                         value={form.customer_phone}
                         onChange={(e) => handleFieldChange('customer_phone', e.target.value)}
                         className="h-11 rounded-lg text-sm transition-shadow focus-visible:ring-[3px]"
-                        style={{
-                          // @ts-expect-error CSS custom property
-                          '--tw-ring-color': `${brandColor}40`,
-                        }}
+                        style={{ '--tw-ring-color': `${brandColor}40` } as React.CSSProperties}
                         autoComplete="tel"
                       />
                     </div>
@@ -538,10 +600,7 @@ export default function CheckoutPage() {
                         value={form.address}
                         onChange={(e) => handleFieldChange('address', e.target.value)}
                         className="h-11 rounded-lg text-sm transition-shadow focus-visible:ring-[3px]"
-                        style={{
-                          // @ts-expect-error CSS custom property
-                          '--tw-ring-color': `${brandColor}40`,
-                        }}
+                        style={{ '--tw-ring-color': `${brandColor}40` } as React.CSSProperties}
                         autoComplete="street-address"
                       />
                     </div>
@@ -559,10 +618,7 @@ export default function CheckoutPage() {
                         <SelectTrigger
                           id="country"
                           className="h-11 w-full rounded-lg text-sm transition-shadow focus-visible:ring-[3px]"
-                          style={{
-                            // @ts-expect-error CSS custom property
-                            '--tw-ring-color': `${brandColor}40`,
-                          }}
+                          style={{ '--tw-ring-color': `${brandColor}40` } as React.CSSProperties}
                         >
                           <SelectValue placeholder={tr.selectCountry} />
                         </SelectTrigger>
@@ -651,10 +707,13 @@ export default function CheckoutPage() {
                   </h3>
 
                   {/* Merchant branding */}
-                  <div className="mb-5 flex items-center gap-3 rounded-xl p-3" style={{ backgroundColor: accentColor }}>
-                    {session.branding.logo_url ? (
+                  <div
+                    className="mb-5 flex items-center gap-3 rounded-xl p-3"
+                    style={{ backgroundColor: accentColor }}
+                  >
+                    {logoUrl ? (
                       <img
-                        src={session.branding.logo_url}
+                        src={logoUrl}
                         alt={session.merchant_name}
                         className="h-12 w-auto max-w-[140px] object-contain"
                       />

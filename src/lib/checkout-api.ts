@@ -4,41 +4,53 @@ import type {
   CheckoutSession,
   CustomerData,
   PaymentInitiateResponse,
+  SumUpMountOptions,
 } from './checkout-types';
+import { normalizeSession } from './checkout-types';
 
 const API_BASE = 'https://api-dev.nexflowx.tech/api/v1';
 
 /**
- * Fetch checkout session by transaction ID
+ * Fetch checkout session by transaction ID.
+ * Normalizes the response to guarantee all required fields are present.
  */
 export async function fetchCheckoutSession(txId: string): Promise<CheckoutSession> {
   const res = await fetch(`${API_BASE}/checkout-session/${txId}`, {
     method: 'GET',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+    },
   });
 
   if (!res.ok) {
     throw new Error(`Session not found (${res.status})`);
   }
 
-  return res.json();
+  const raw: Record<string, unknown> = await res.json();
+  return normalizeSession(raw);
 }
 
 /**
- * Auto-save customer data with debounce (called from client)
+ * Auto-save customer data with debounce (called from client).
+ * Fails silently — never blocks the user's typing.
  */
 export async function patchCustomerData(
   txId: string,
   data: CustomerData
-): Promise<void> {
+): Promise<boolean> {
   try {
-    await fetch(`${API_BASE}/checkout-session/${txId}/customer`, {
+    const res = await fetch(`${API_BASE}/checkout-session/${txId}/customer`, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      },
       body: JSON.stringify(data),
     });
+    return res.ok;
   } catch {
-    // Silent fail — don't block the user's typing
+    return false;
   }
 }
 
@@ -50,7 +62,10 @@ export async function initiatePayment(
 ): Promise<PaymentInitiateResponse> {
   const res = await fetch(`${API_BASE}/checkout-session/${txId}/initiate`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+    },
   });
 
   if (!res.ok) {
@@ -61,8 +76,8 @@ export async function initiatePayment(
 }
 
 /**
- * Detect buyer's country from IP using free geolocation API
- * Returns ISO country code (e.g. 'PT', 'DE', 'US')
+ * Detect buyer's country from IP using free geolocation API.
+ * Returns ISO country code (e.g. 'PT', 'DE', 'US') or null.
  */
 export async function detectCountryFromIP(): Promise<string | null> {
   try {
@@ -88,53 +103,129 @@ export async function detectCountryFromIP(): Promise<string | null> {
 }
 
 /**
- * Dynamically load the SumUp checkout script and mount the card widget
+ * Ensure the SumUp SDK is loaded, then mount the card widget.
+ *
+ * Strategy:
+ * 1. If `window.SumUpCard` already exists → mount immediately.
+ * 2. If `window.__sumupSdkReady` (loaded by /sumup-checkout.js) → mount immediately.
+ * 3. Otherwise → register a callback on `window.__sumupCallbacks` that will fire
+ *    once the SDK loader finishes. Also listen for the `sumup-sdk-ready` event.
+ * 4. Timeout after 15 s to avoid indefinite waiting.
  */
 export function mountSumUpCard(
   checkoutId: string,
   containerId: string,
   onSuccess?: () => void,
-  onError?: (err: string) => void
-): void {
-  // Check if script is already loaded
-  if (document.getElementById('sumup-checkout-script')) {
-    // Script exists — mount directly
-    (window as Record<string, unknown>).SumUpCard?.mount({
-      id: checkoutId,
-      container: document.getElementById(containerId),
-      onResult: (result: { status: string }) => {
-        if (result.status === 'SUCCESS') {
-          onSuccess?.();
-        }
-      },
-      onError: (err: { message: string }) => {
-        onError?.(err.message);
-      },
-    });
-    return;
+  onError?: (err: string) => void,
+  timeoutMs: number = 15000
+): () => void {
+  const container = document.getElementById(containerId);
+  if (!container) {
+    onError?.(`Container #${containerId} not found`);
+    return () => {};
   }
 
+  const mountOptions: SumUpMountOptions = {
+    id: checkoutId,
+    container,
+    onResult: (result) => {
+      if (result.status === 'SUCCESS') {
+        onSuccess?.();
+      }
+    },
+    onError: (err) => {
+      onError?.(err.message || 'Payment error');
+    },
+  };
+
+  // ── Already available ────────────────────────────────────────────────────────
+  if (window.SumUpCard) {
+    try {
+      window.SumUpCard.mount(mountOptions);
+    } catch (e) {
+      onError?.(e instanceof Error ? e.message : 'Mount error');
+    }
+    return () => {};
+  }
+
+  // ── SDK loading in progress (via /sumup-checkout.js) ─────────────────────────
+  let mounted = false;
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+  function doMount() {
+    if (mounted) return;
+    mounted = true;
+    if (timeoutId) clearTimeout(timeoutId);
+
+    if (window.SumUpCard) {
+      try {
+        window.SumUpCard.mount(mountOptions);
+      } catch (e) {
+        onError?.(e instanceof Error ? e.message : 'Mount error');
+      }
+    } else {
+      onError?.('SumUp SDK loaded but SumUpCard is not available');
+    }
+  }
+
+  function doError(err: string) {
+    if (mounted) return;
+    mounted = true;
+    if (timeoutId) clearTimeout(timeoutId);
+    onError?.(err);
+  }
+
+  // Register callback for the SDK loader queue
+  if (!window.__sumupCallbacks) window.__sumupCallbacks = [];
+  window.__sumupCallbacks.push((err?: Error) => {
+    if (err) doError(err.message);
+    else doMount();
+  });
+
+  // Also listen for the custom event (race-condition safety)
+  function onReady() {
+    window.removeEventListener('sumup-sdk-ready', onReady);
+    window.removeEventListener('sumup-sdk-error', onErrorEvent);
+    doMount();
+  }
+  function onErrorEvent() {
+    window.removeEventListener('sumup-sdk-ready', onReady);
+    window.removeEventListener('sumup-sdk-error', onErrorEvent);
+    doError('Failed to load SumUp payment SDK');
+  }
+
+  window.addEventListener('sumup-sdk-ready', onReady);
+  window.addEventListener('sumup-sdk-error', onErrorEvent);
+
+  // Timeout fallback
+  timeoutId = setTimeout(() => {
+    if (mounted) return;
+    mounted = true;
+    window.removeEventListener('sumup-sdk-ready', onReady);
+    window.removeEventListener('sumup-sdk-error', onErrorEvent);
+    doError('Payment provider took too long to load. Please try again.');
+  }, timeoutMs);
+
+  // Return cleanup function
+  return () => {
+    if (timeoutId) clearTimeout(timeoutId);
+    window.removeEventListener('sumup-sdk-ready', onReady);
+    window.removeEventListener('sumup-sdk-error', onErrorEvent);
+  };
+}
+
+/**
+ * Preload the SumUp SDK by loading the local loader script `/sumup-checkout.js`.
+ * Call this early (e.g. on page load) so the SDK is ready when the user clicks Pay.
+ * Returns a cleanup function to remove the script if needed.
+ */
+export function preloadSumUpSDK(): void {
+  if (window.__sumupSdkLoading || window.SumUpCard) return;
+
   const script = document.createElement('script');
-  script.id = 'sumup-checkout-script';
-  script.src = 'https://gateway.sumup.com/gateway/ecom/checkout/v1/sumup-checkout.js';
+  script.src = '/sumup-checkout.js';
   script.async = true;
-  script.onload = () => {
-    (window as Record<string, unknown>).SumUpCard?.mount({
-      id: checkoutId,
-      container: document.getElementById(containerId),
-      onResult: (result: { status: string }) => {
-        if (result.status === 'SUCCESS') {
-          onSuccess?.();
-        }
-      },
-      onError: (err: { message: string }) => {
-        onError?.(err.message);
-      },
-    });
-  };
-  script.onerror = () => {
-    onError?.('Failed to load payment provider');
-  };
+  script.id = 'sumup-loader-script';
   document.head.appendChild(script);
 }
 
