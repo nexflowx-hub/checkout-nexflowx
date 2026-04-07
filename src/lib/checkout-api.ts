@@ -6,11 +6,11 @@ import type {
   PaymentInitiateResponse,
 } from './checkout-types';
 
-// 1. Read from Vercel env var (fallback to prod if missing)
+// Read from Vercel env var (fallback to prod if missing)
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'https://api.nexflowx.tech/api/v1';
 
 /**
- * Fetch checkout session by transaction ID
+ * Fetch checkout session by transaction ID.
  */
 export async function fetchCheckoutSession(txId: string): Promise<CheckoutSession> {
   const res = await fetch(`${API_BASE}/checkout-session/${txId}`, {
@@ -26,7 +26,7 @@ export async function fetchCheckoutSession(txId: string): Promise<CheckoutSessio
 }
 
 /**
- * Auto-save customer data with debounce (called from client)
+ * Auto-save customer data with debounce (called from client).
  */
 export async function patchCustomerData(
   txId: string,
@@ -40,12 +40,16 @@ export async function patchCustomerData(
     });
   } catch (error) {
     // Silent fail so we don't block UX, but keep signal in console for debugging
-    console.warn('Auto-save failed silently:', error);
+    console.warn('[Checkout] Auto-save failed silently:', error);
   }
 }
 
 /**
- * Initiate payment — returns provider-specific response
+ * Initiate payment — returns provider-specific response.
+ *
+ * Response shapes:
+ *  - SumUp: { provider: "sumup", checkout_id: "abc" }
+ *  - Stripe: { provider: "stripe", redirect_url: "https://checkout.stripe.com/..." }
  */
 export async function initiatePayment(
   txId: string
@@ -63,8 +67,61 @@ export async function initiatePayment(
 }
 
 /**
- * Detect buyer's country from IP using free geolocation API
- * Returns ISO country code (e.g. 'PT', 'DE', 'US')
+ * Dynamically load the SumUp card SDK (v2) and mount the card widget.
+ *
+ * Ref: https://developer.sumup.com/online-payments/checkouts/card-widget
+ *
+ * The widget renders inline (headless) inside the given container div.
+ * 3D Secure modals are injected automatically by SumUp when required.
+ *
+ * @param checkoutId  - ID returned by POST /initiate (SumUp checkout session)
+ * @param containerId - DOM id of the div that will host the widget (e.g. "sumup-card")
+ * @param onSuccess   - Called when payment completes successfully
+ * @param onError     - Called on failure or load error
+ */
+export function mountSumUpCard(
+  checkoutId: string,
+  containerId: string,
+  onSuccess?: () => void,
+  onError?: (err: string) => void
+): void {
+  const mountWidget = () => {
+    (window as any).SumUpCard?.mount({
+      id: containerId,
+      checkoutId,
+      onResponse: (type: string, body: any) => {
+        if (type === 'success') {
+          onSuccess?.();
+        } else {
+          console.error('[SumUp] Payment error:', body);
+          onError?.('O pagamento falhou ou foi rejeitado.');
+        }
+      },
+    });
+  };
+
+  // If the SDK script is already loaded in this session, mount immediately
+  if ((window as any).SumUpCard) {
+    mountWidget();
+    return;
+  }
+
+  // Load SumUp Card SDK v2 — official production URL
+  const script = document.createElement('script');
+  script.id = 'sumup-checkout-script';
+  script.src = 'https://gateway.sumup.com/gateway/ecom/card/v2/sdk.js';
+  script.async = true;
+  script.onload = mountWidget;
+  script.onerror = () => {
+    onError?.('Falha ao comunicar com a rede de pagamentos. Verifique a sua ligação.');
+  };
+
+  document.head.appendChild(script);
+}
+
+/**
+ * Detect buyer's country from IP using free geolocation API.
+ * Returns ISO country code (e.g. 'PT', 'DE', 'US') or null.
  */
 export async function detectCountryFromIP(): Promise<string | null> {
   try {
@@ -87,47 +144,6 @@ export async function detectCountryFromIP(): Promise<string | null> {
       return null;
     }
   }
-}
-
-/**
- * Dynamically load the SumUp checkout script and mount the card widget
- */
-export function mountSumUpCard(
-  checkoutId: string,
-  containerId: string,
-  onSuccess?: () => void,
-  onError?: (err: string) => void
-): void {
-  const mountWidget = () => {
-    (window as any).SumUpCard?.mount({
-      id: containerId,
-      checkoutId,
-      onResponse: (type: string) => {
-        if (type === 'success') {
-          onSuccess?.();
-        } else {
-          onError?.('Payment failed or was rejected.');
-        }
-      },
-    });
-  };
-
-  // If already available, mount immediately
-  if ((window as any).SumUpCard) {
-    mountWidget();
-    return;
-  }
-
-  const script = document.createElement('script');
-  script.id = 'sumup-checkout-script';
-  script.src = 'https://gateway.sumup.com/gateway/ecom/card/v1.2/js/sdk.js';
-  script.async = true;
-  script.onload = mountWidget;
-  script.onerror = () => {
-    onError?.('Failed to load payment provider.');
-  };
-
-  document.head.appendChild(script);
 }
 
 /**
