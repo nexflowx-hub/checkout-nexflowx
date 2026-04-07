@@ -1,38 +1,9 @@
 // ─── Checkout Types ────────────────────────────────────────────────────────────
 
-// ─── Window extensions for SumUp SDK ──────────────────────────────────────────
-declare global {
-  interface Window {
-    SumUpCard?: {
-      mount: (options: SumUpMountOptions) => void;
-    };
-    __sumupSdkLoading?: boolean;
-    __sumupSdkReady?: boolean;
-    __sumupSdkError?: boolean;
-    __sumupCallbacks?: Array<(err?: Error) => void>;
-  }
-}
-
-export interface SumUpMountOptions {
-  id: string;
-  container: HTMLElement | null;
-  onResult?: (result: { status: string }) => void;
-  onError?: (err: { message: string }) => void;
-}
-
 export interface CheckoutBranding {
   logo_url?: string;
   primary_color: string;
   accent_color: string;
-}
-
-/** Safe accessor for branding fields with fallbacks */
-export function safeBranding(branding: Partial<CheckoutBranding> | undefined): CheckoutBranding {
-  return {
-    logo_url: branding?.logo_url ?? '',
-    primary_color: branding?.primary_color ?? '#0a0a0a',
-    accent_color: branding?.accent_color ?? '#f5f5f5',
-  };
 }
 
 export interface CheckoutSession {
@@ -42,20 +13,6 @@ export interface CheckoutSession {
   merchant_name: string;
   branding: CheckoutBranding;
   allowed_methods: string[];
-}
-
-/** Normalize a raw API response into a valid CheckoutSession */
-export function normalizeSession(raw: Record<string, unknown>): CheckoutSession {
-  return {
-    id: String(raw.id ?? ''),
-    amount: Number(raw.amount ?? 0),
-    currency: String(raw.currency ?? 'EUR'),
-    merchant_name: String(raw.merchant_name ?? 'Store'),
-    branding: safeBranding(raw.branding as Record<string, unknown> | undefined),
-    allowed_methods: Array.isArray(raw.allowed_methods)
-      ? raw.allowed_methods.map(String)
-      : ['card'],
-  };
 }
 
 export interface CustomerData {

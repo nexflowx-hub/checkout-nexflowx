@@ -66,3 +66,37 @@ Stage Summary:
 - SumUp integration fixed: correct SDK URL, proper mount lifecycle with timeout/cleanup
 - Branding colors applied via CSS custom properties with safe fallbacks
 - Payment flow: Form → Pay button → POST /initiate → SumUpCard.mount() (sumup) or redirect (stripe)
+
+---
+Task ID: 3
+Agent: Main Agent
+Task: Apply user-contributed improvements to checkout-api.ts and sync checkout-page.tsx + checkout-types.ts
+
+Work Log:
+- Applied user's diff to `src/lib/checkout-api.ts`:
+  - API_BASE now reads from `NEXT_PUBLIC_API_URL` env var with fallback to `https://api.nexflowx.tech/api/v1`
+  - Auto-save (`patchCustomerData`) now logs `console.warn` on failure instead of pure silent fail
+  - Geolocation fallback updated: removed insecure `http://ip-api.com`, replaced with HTTPS `https://freeipapi.com/api/json`
+  - SumUp mount simplified to new widget API: `id` = container, `checkoutId` = session, `onResponse` callback
+  - SDK script URL corrected to `https://gateway.sumup.com/gateway/ecom/card/v1.2/js/sdk.js`
+  - `formatCurrency` default locale changed to `pt-PT`
+  - Removed `normalizeSession()`, `SumUpMountOptions`, `preloadSumUpSDK()` (user's simpler approach)
+- Synced `src/components/checkout/checkout-page.tsx`:
+  - Removed `preloadSumUpSDK` import and useEffect
+  - Removed `cleanupRef` (mountSumUpCard no longer returns cleanup function)
+  - Simplified `handleCancelPayment` (no cleanup needed)
+  - Removed unmount cleanup effect for SumUp
+- Cleaned `src/lib/checkout-types.ts`:
+  - Removed `declare global { Window }` extensions
+  - Removed `SumUpMountOptions` interface
+  - Removed `safeBranding()` and `normalizeSession()` helpers
+  - File now contains only pure types, MOCK_SESSION, and COUNTRIES
+- ESLint: 0 errors, 0 warnings
+- Dev server: HTTP 200 confirmed
+
+Stage Summary:
+- User's architectural improvements fully integrated and codebase synced
+- API URL now configurable per Vercel environment
+- SumUp integration follows latest widget API pattern (checkoutId + id + onResponse)
+- Mixed content issue resolved (all HTTPS endpoints)
+- `public/sumup-checkout.js` loader file is now unused (SDK loaded directly in mountSumUpCard) — can be safely removed later

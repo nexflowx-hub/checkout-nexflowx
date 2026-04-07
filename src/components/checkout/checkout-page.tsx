@@ -45,7 +45,6 @@ import {
   mountSumUpCard,
   formatCurrency,
   detectCountryFromIP,
-  preloadSumUpSDK,
 } from '@/lib/checkout-api';
 
 // ─── Debounce Hook ──────────────────────────────────────────────────────────────
@@ -239,7 +238,6 @@ export default function CheckoutPage() {
   const [saving, setSaving] = useState(false);
   const [paying, setPaying] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
-  const cleanupRef = useRef<(() => void) | null>(null);
 
   // ─── Detect language from IP on mount ────────────────────────────────────────
   useEffect(() => {
@@ -254,11 +252,6 @@ export default function CheckoutPage() {
     return () => {
       cancelled = true;
     };
-  }, []);
-
-  // ─── Preload SumUp SDK as soon as page loads ────────────────────────────────
-  useEffect(() => {
-    preloadSumUpSDK();
   }, []);
 
   // ─── Fetch session when txId is present ──────────────────────────────────────
@@ -350,7 +343,7 @@ export default function CheckoutPage() {
 
         // Small delay to let the container render before mounting
         setTimeout(() => {
-          const cleanup = mountSumUpCard(
+          mountSumUpCard(
             result.checkout_id!,
             'sumup-card-container',
             () => {
@@ -363,7 +356,6 @@ export default function CheckoutPage() {
               setErrorMsg(err);
             }
           );
-          cleanupRef.current = cleanup;
         }, 150);
       } else if (result.provider === 'stripe' && result.redirect_url) {
         setPhase('processing');
@@ -383,10 +375,6 @@ export default function CheckoutPage() {
 
   // ─── Cancel SumUp payment ───────────────────────────────────────────────────
   const handleCancelPayment = useCallback(() => {
-    if (cleanupRef.current) {
-      cleanupRef.current();
-      cleanupRef.current = null;
-    }
     setPhase('form');
     setPaying(false);
   }, []);
@@ -410,16 +398,6 @@ export default function CheckoutPage() {
       setPhase('form');
     }
   }, [txId]);
-
-  // ─── Cleanup on unmount ─────────────────────────────────────────────────────
-  useEffect(() => {
-    return () => {
-      if (cleanupRef.current) {
-        cleanupRef.current();
-        cleanupRef.current = null;
-      }
-    };
-  }, []);
 
   // ─── Dynamic branding colors (safe with defaults) ────────────────────────────
   const brandColor = session?.branding?.primary_color ?? '#0a0a0a';
