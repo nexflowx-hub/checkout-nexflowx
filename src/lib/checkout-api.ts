@@ -39,17 +39,12 @@ export async function patchCustomerData(
       body: JSON.stringify(data),
     });
   } catch (error) {
-    // Silent fail so we don't block UX, but keep signal in console for debugging
     console.warn('[Checkout] Auto-save failed silently:', error);
   }
 }
 
 /**
  * Initiate payment — returns provider-specific response.
- *
- * Response shapes:
- *  - SumUp: { provider: "sumup", checkout_id: "abc" }
- *  - Stripe: { provider: "stripe", redirect_url: "https://checkout.stripe.com/..." }
  */
 export async function initiatePayment(
   txId: string
@@ -82,6 +77,41 @@ export async function confirmSumUpPayment(txId: string, checkoutId: string): Pro
 }
 
 /**
+ * Poll for a DOM element by id until it appears or timeout.
+ * Uses requestAnimationFrame for optimal timing.
+ */
+function waitForElement(
+  elementId: string,
+  timeoutMs: number = 3000
+): Promise<HTMLElement | null> {
+  return new Promise((resolve) => {
+    // Immediate check first
+    const existing = document.getElementById(elementId);
+    if (existing) {
+      requestAnimationFrame(() => resolve(existing));
+      return;
+    }
+
+    const startTime = Date.now();
+
+    function check() {
+      const el = document.getElementById(elementId);
+      if (el) {
+        requestAnimationFrame(() => resolve(el));
+        return;
+      }
+      if (Date.now() - startTime >= timeoutMs) {
+        resolve(null);
+        return;
+      }
+      requestAnimationFrame(check);
+    }
+
+    requestAnimationFrame(check);
+  });
+}
+
+/**
  * Dynamically load the SumUp card SDK (v2) and mount the card widget.
  *
  * Ref: https://developer.sumup.com/online-payments/checkouts/card-widget
@@ -89,54 +119,79 @@ export async function confirmSumUpPayment(txId: string, checkoutId: string): Pro
  * The widget renders inline (headless) inside the given container div.
  * 3D Secure modals are injected automatically by SumUp when required.
  *
+ * This function polls for the container element before mounting, avoiding
+ * the "missing DOM element" error when the container hasn't rendered yet.
+ *
  * @param checkoutId  - ID returned by POST /initiate (SumUp checkout session)
- * @param containerId - DOM id of the div that will host the widget (e.g. "sumup-card")
+ * @param containerId - DOM id of the div that will host the widget
  * @param onSuccess   - Called when payment completes successfully
  * @param onError     - Called on failure or load error
  */
-export function mountSumUpCard(
+export async function mountSumUpCard(
   checkoutId: string,
   containerId: string,
   onSuccess?: () => void,
   onError?: (err: string) => void
-): void {
-  const mountWidget = () => {
-    (window as any).SumUpCard?.mount({
-      id: containerId,
-      checkoutId,
-      onResponse: (type: string, body: any) => {
-        if (type === 'success') {
-          onSuccess?.();
-        } else {
-          console.error('[SumUp] Payment error:', body);
-          onError?.('O pagamento falhou ou foi rejeitado.');
-        }
-      },
-    });
+): Promise<void> {
+  const container = await waitForElement(containerId);
+
+  if (!container) {
+    onError?.('Elemento de pagamento não encontrado. Recarregue a página.');
+    return;
+  }
+
+  const doMount = () => {
+    try {
+      (window as any).SumUpCard?.mount({
+        id: containerId,
+        checkoutId,
+        onResponse: (type: string, body: any) => {
+          if (type === 'success') {
+            onSuccess?.();
+          } else {
+            console.error('[SumUp] Payment error:', body);
+            onError?.('O pagamento falhou ou foi rejeitado.');
+          }
+        },
+      });
+    } catch (e) {
+      onError?.(e instanceof Error ? e.message : 'Erro ao montar widget de pagamento.');
+    }
   };
 
-  // If the SDK script is already loaded in this session, mount immediately
+  // If the SDK is already loaded, mount immediately
   if ((window as any).SumUpCard) {
-    mountWidget();
+    doMount();
     return;
   }
 
   // Load SumUp Card SDK v2 — official production URL
-  const script = document.createElement('script');
-  script.id = 'sumup-checkout-script';
-  script.src = 'https://gateway.sumup.com/gateway/ecom/card/v2/sdk.js';
-  script.async = true;
-  script.onload = mountWidget;
-  script.onerror = () => {
-    onError?.('Falha ao comunicar com a rede de pagamentos. Verifique a sua ligação.');
-  };
+  return new Promise<void>((resolve) => {
+    // Remove any previous SumUp script to avoid duplicates
+    const prev = document.getElementById('sumup-checkout-script');
+    if (prev) prev.remove();
 
-  document.head.appendChild(script);
+    const script = document.createElement('script');
+    script.id = 'sumup-checkout-script';
+    script.src = 'https://gateway.sumup.com/gateway/ecom/card/v2/sdk.js';
+    script.async = true;
+
+    script.onload = () => {
+      doMount();
+      resolve();
+    };
+
+    script.onerror = () => {
+      onError?.('Falha ao comunicar com a rede de pagamentos. Verifique a sua ligação.');
+      resolve();
+    };
+
+    document.head.appendChild(script);
+  });
 }
 
 /**
  * Detect buyer's country from IP using free geolocation API.
- * Returns ISO country code (e.g. 'PT', 'DE', 'US') or null.
  */
 export async function detectCountryFromIP(): Promise<string | null> {
   try {
@@ -147,7 +202,6 @@ export async function detectCountryFromIP(): Promise<string | null> {
     const data: { country_code?: string } = await res.json();
     return data.country_code ?? null;
   } catch {
-    // Fallback updated to a free HTTPS endpoint (avoids mixed-content in production)
     try {
       const res = await fetch('https://freeipapi.com/api/json', {
         signal: AbortSignal.timeout(4000),
