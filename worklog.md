@@ -100,3 +100,35 @@ Stage Summary:
 - SumUp integration follows latest widget API pattern (checkoutId + id + onResponse)
 - Mixed content issue resolved (all HTTPS endpoints)
 - `public/sumup-checkout.js` loader file is now unused (SDK loaded directly in mountSumUpCard) — can be safely removed later
+
+---
+Task ID: 4
+Agent: Main Agent
+Task: Fix SumUp SDK 404 (v2 URL), clean orphans, create technical dossier, push to GitHub
+
+Work Log:
+- Diagnosed 404: tested all known SumUp SDK URLs (`v1`, `v1.2`, `checkout/v1`, `card/v2`). Only `card/v2/sdk.js` returns 200 (293KB valid JS)
+- Updated `src/lib/checkout-api.ts`:
+  - Changed `mountSumUpCard()` SDK URL to `https://gateway.sumup.com/gateway/ecom/card/v2/sdk.js`
+  - Removed `buildPaymentRedirect()` (not needed — SumUp uses embedded widget, not redirect)
+  - Added `body` parameter to `onResponse` callback for error logging
+- Deleted orphaned files (8 files):
+  - `public/sumup-checkout.js` (old SDK loader, no longer needed)
+  - `public/logo.svg` (unused, replaced by walluxe-logo-nome.png)
+  - `src/app/api/route.ts` + `src/app/api/` (placeholder, never called)
+  - `src/lib/db.ts` (Prisma singleton, no DB used in app)
+  - `src/hooks/use-mobile.ts` (not imported by any reachable code)
+  - `examples/` (websocket demo, not part of build)
+  - `download/` (empty placeholder)
+- Created `DOSSIER_TECNICO.md` (11 sections, ~400 lines):
+  - Architecture, data flow, API contract, SumUp v2 integration, i18n, UX states, deploy, security, troubleshooting
+- Committed: `fix: SumUp SDK v2 URL, remove orphans, add technical dossier`
+- Pushed to `nexflowx-hub/checkout-nexflowx` (4411f4a)
+- ESLint: 0 errors, 0 warnings
+- Working tree clean
+
+Stage Summary:
+- SumUp 404 resolved: SDK v2 (`card/v2/sdk.js`) confirmed working (HTTP 200, 293KB)
+- 8 orphaned files removed (503 lines deleted, 404 lines added = net -99 lines)
+- `DOSSIER_TECNICO.md` added with complete technical documentation
+- GitHub up to date: `40b0d2b..4411f4a  main -> main`
