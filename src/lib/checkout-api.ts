@@ -67,6 +67,21 @@ export async function initiatePayment(
 }
 
 /**
+ * Confirm a SumUp payment with the backend so webhooks can be dispatched.
+ */
+export async function confirmSumUpPayment(txId: string, checkoutId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/sumup/confirm`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ txId, checkoutId }),
+  });
+
+  if (!res.ok) {
+    throw new Error(`Payment confirmation failed (${res.status})`);
+  }
+}
+
+/**
  * Dynamically load the SumUp card SDK (v2) and mount the card widget.
  *
  * Ref: https://developer.sumup.com/online-payments/checkouts/card-widget

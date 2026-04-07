@@ -43,6 +43,7 @@ import {
   patchCustomerData,
   initiatePayment,
   mountSumUpCard,
+  confirmSumUpPayment,
   formatCurrency,
   detectCountryFromIP,
 } from '@/lib/checkout-api';
@@ -346,8 +347,15 @@ export default function CheckoutPage() {
           mountSumUpCard(
             result.checkout_id!,
             'sumup-card-container',
-            () => {
-              setPaying(false);
+            async () => {
+              try {
+                await confirmSumUpPayment(session.id, result.checkout_id!);
+                window.location.href = 'https://api.nexflowx.tech/success';
+              } catch (err) {
+                console.error('[Checkout] Confirmation error:', err);
+                setPaying(false);
+                setErrorMsg('O pagamento foi aceite, mas ocorreu um erro na confirmação.');
+              }
             },
             (err) => {
               console.error('[Checkout] SumUp mount error:', err);
