@@ -23,10 +23,16 @@ export interface CustomerData {
   country?: string;
 }
 
+/**
+ * Response from POST /initiate — backend v3.0 multi-tenant hybrid.
+ *
+ * - If SumUp: provider='sumup', checkout_id present
+ * - If Stripe: provider='stripe', client_secret present
+ */
 export interface PaymentInitiateResponse {
   provider: 'sumup' | 'stripe';
   checkout_id?: string;
-  redirect_url?: string;
+  client_secret?: string;
 }
 
 export interface CheckoutFormState {
@@ -37,7 +43,14 @@ export interface CheckoutFormState {
   country: string;
 }
 
-export type CheckoutPhase = 'loading' | 'form' | 'processing' | 'external_payment' | 'error';
+export type CheckoutPhase =
+  | 'loading'
+  | 'form'
+  | 'initiating'       // auto-initiating payment in background
+  | 'paying'           // payment zone revealed, user interacting
+  | 'processing'       // payment being processed/confirmed
+  | 'success'          // payment confirmed
+  | 'error';
 
 // Country list for the select dropdown
 export const COUNTRIES = [

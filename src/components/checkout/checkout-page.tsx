@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, startTransition } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useSearchParams } from 'next/navigation';
 import {
@@ -16,9 +16,9 @@ import {
   ChevronRight,
   Phone,
   Languages,
-  ArrowLeft,
   CheckCircle2,
   X,
+  Sparkles,
 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -32,10 +32,18 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
+import {
+  Elements,
+  PaymentElement,
+  useStripe,
+  useElements,
+} from '@stripe/react-stripe-js';
+import { loadStripe as loadStripeSDK } from '@stripe/stripe-js';
 import type {
   CheckoutSession,
   CheckoutFormState,
   CheckoutPhase,
+  PaymentInitiateResponse,
 } from '@/lib/checkout-types';
 import { MOCK_SESSION, COUNTRIES } from '@/lib/checkout-types';
 import type { CheckoutLocale } from '@/lib/checkout-i18n';
@@ -46,9 +54,26 @@ import {
   initiatePayment,
   mountSumUpCard,
   confirmSumUpPayment,
+  confirmStripePayment,
   formatCurrency,
   detectCountryFromIP,
 } from '@/lib/checkout-api';
+
+// ─── Stripe Promise (lazy) ─────────────────────────────────────────────────────
+let stripePromise: Promise<any> | null = null;
+function getStripePromise(): Promise<any> {
+  if (!stripePromise) {
+    const key = process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY || '';
+    stripePromise = key ? loadStripeSDK(key) : Promise.resolve(null);
+  }
+  return stripePromise;
+}
+
+// ─── Email validation ──────────────────────────────────────────────────────────
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+function isValidEmail(email: string): boolean {
+  return EMAIL_RE.test(email.trim());
+}
 
 // ─── Debounce Hook ──────────────────────────────────────────────────────────────
 function useDebouncedCallback<T extends (...args: unknown[]) => void>(
@@ -142,7 +167,7 @@ function CheckoutError({
   );
 }
 
-// ─── Processing / Redirecting State ────────────────────────────────────────────
+// ─── Processing State ──────────────────────────────────────────────────────────
 function PaymentProcessing({
   merchantName,
   tr,
@@ -160,10 +185,8 @@ function PaymentProcessing({
         <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-full bg-gray-100">
           <Loader2 className="h-8 w-8 animate-spin text-gray-600" />
         </div>
-        <h2 className="mb-2 text-lg font-semibold text-gray-900">{tr.processingPayment}</h2>
-        <p className="text-sm text-gray-500">
-          {tr.redirectingTo} {merchantName}...
-        </p>
+        <h2 className="mb-2 text-lg font-semibold text-gray-900">{tr.confirmingPayment}</h2>
+        <p className="text-sm text-gray-500">{tr.redirectingTo} {merchantName}...</p>
         <p className="mt-2 text-xs text-gray-400">{tr.doNotClose}</p>
       </motion.div>
     </div>
@@ -286,6 +309,81 @@ function MobileSummary({
   );
 }
 
+// ─── Stripe Payment Form (embedded sub-component) ──────────────────────────────
+function StripePaymentForm({
+  session,
+  brandColor,
+  tr,
+  onSuccess,
+  onError,
+}: {
+  session: CheckoutSession;
+  brandColor: string;
+  tr: ReturnType<typeof t>;
+  onSuccess: () => void;
+  onError: (msg: string) => void;
+}) {
+  const stripe = useStripe();
+  const elements = useElements();
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!stripe || !elements) return;
+
+    setLoading(true);
+    onError('');
+
+    try {
+      const { error } = await stripe.confirmPayment({
+        elements,
+        confirmParams: {
+          return_url: window.location.href,
+        },
+        redirect: 'if_required',
+      });
+
+      if (error) {
+        onError(error.message || 'Payment failed.');
+        setLoading(false);
+        return;
+      }
+
+      // Payment succeeded without redirect — confirm with backend
+      await confirmStripePayment(session.id);
+      onSuccess();
+    } catch (err: any) {
+      onError(err?.message || tr.paymentFailedMsg);
+      setLoading(false);
+    }
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-4">
+      <PaymentElement />
+      <Button
+        type="submit"
+        disabled={loading || !stripe}
+        className="group relative h-12 w-full rounded-xl text-sm font-semibold text-white shadow-lg transition-all hover:shadow-xl hover:brightness-110 active:scale-[0.98] disabled:opacity-50 disabled:hover:brightness-100"
+        style={{ backgroundColor: brandColor }}
+      >
+        {loading ? (
+          <>
+            <Loader2 className="h-4 w-4 animate-spin" />
+            {tr.processing}
+          </>
+        ) : (
+          <>
+            <Lock className="h-4 w-4 transition-transform group-hover:scale-110" />
+            {tr.confirmPayment} {formatCurrency(session.amount, session.currency, 'pt-PT')}
+            <ChevronRight className="ml-auto h-4 w-4 transition-transform group-hover:translate-x-0.5" />
+          </>
+        )}
+      </Button>
+    </form>
+  );
+}
+
 // ─── Main Checkout Page ─────────────────────────────────────────────────────────
 export default function CheckoutPage() {
   const searchParams = useSearchParams();
@@ -306,10 +404,12 @@ export default function CheckoutPage() {
     country: '',
   });
   const [saving, setSaving] = useState(false);
-  const [paying, setPaying] = useState(false);
-  const [confirming, setConfirming] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
+  const [paymentResponse, setPaymentResponse] = useState<PaymentInitiateResponse | null>(null);
+  const sumUpInitiatedRef = useRef(false);
+
   const isMountedRef = useRef(true);
+  const initiateCalledRef = useRef(false);
 
   // ─── Cleanup on unmount ────────────────────────────────────────────────────
   useEffect(() => {
@@ -391,86 +491,105 @@ export default function CheckoutPage() {
     [debouncedSave, session]
   );
 
-  // ─── Payment initiation ─────────────────────────────────────────────────
-  const handlePay = useCallback(async () => {
-    if (!session) return;
-    if (!form.customer_name.trim() || !form.customer_email.trim()) return;
+  // ─── Progressive Disclosure: auto-initiate when name + email are valid ──
+  const canAutoInitiate =
+    form.customer_name.trim().length >= 2 &&
+    isValidEmail(form.customer_email);
 
-    setPaying(true);
-    setErrorMsg('');
+  useEffect(() => {
+    if (!canAutoInitiate || !session || !session.id) return;
+    // Don't re-initiate if already done
+    if (initiateCalledRef.current || paymentResponse) return;
+    // Don't initiate if in a terminal phase
+    if (phase !== 'form') return;
 
-    try {
-      const result = await initiatePayment(session.id);
+    let cancelled = false;
+    initiateCalledRef.current = true;
+    startTransition(() => setPhase('initiating'));
 
-      if (result.provider === 'sumup' && result.checkout_id) {
-        setPhase('external_payment');
+    initiatePayment(session.id)
+      .then((result) => {
+        if (cancelled || !isMountedRef.current) return;
 
-        // mountSumUpCard now polls for the container element (up to 3s)
-        mountSumUpCard(
-          result.checkout_id!,
-          'sumup-card-container',
-          async () => {
-            if (!isMountedRef.current) return;
+        if (result.provider === 'stripe' && result.client_secret) {
+          setPaymentResponse(result);
+          setPhase('paying');
+        } else if (result.provider === 'sumup' && result.checkout_id) {
+          setPaymentResponse(result);
+          setPhase('paying');
+        } else {
+          // Fallback: unknown provider
+          setPhase('form');
+          setErrorMsg('Unsupported payment provider configuration.');
+        }
+      })
+      .catch((err) => {
+        if (cancelled || !isMountedRef.current) return;
+        console.error('[Checkout] Auto-initiate error:', err);
+        setPhase('form');
+        setErrorMsg(tr.paymentFailedMsg);
+        // Allow retry
+        initiateCalledRef.current = false;
+      });
 
-            // Show confirmation step
-            setConfirming(true);
+    return () => { cancelled = true; };
+  }, [canAutoInitiate, session, paymentResponse, phase, tr.paymentFailedMsg]);
 
-            try {
-              await confirmSumUpPayment(session.id, result.checkout_id!);
+  // ─── Handle SumUp card mount (only once when phase is paying + provider is sumup) ──
+  useEffect(() => {
+    if (
+      phase !== 'paying' ||
+      !paymentResponse ||
+      paymentResponse.provider !== 'sumup' ||
+      !paymentResponse.checkout_id ||
+      sumUpInitiatedRef.current
+    ) return;
 
-              if (!isMountedRef.current) return;
-              setPaying(false);
-              setConfirming(false);
-              setPhase('success');
+    sumUpInitiatedRef.current = true;
 
-              // Brief success flash, then redirect
-              setTimeout(() => {
-                window.location.href = 'https://api.nexflowx.tech/success';
-              }, 1500);
-            } catch (err) {
-              if (!isMountedRef.current) return;
-              console.error('[Checkout] Confirmation error:', err);
-              setPaying(false);
-              setConfirming(false);
-              setPhase('form');
-              setErrorMsg('O pagamento foi aceite, mas ocorreu um erro na confirmação.');
-            }
-          },
-          (err) => {
-            if (!isMountedRef.current) return;
-            console.error('[Checkout] SumUp error:', err);
-            setPhase('form');
-            setPaying(false);
-            setErrorMsg(err);
-          }
-        );
-      } else if (result.provider === 'stripe' && result.redirect_url) {
-        setPhase('processing');
-        setTimeout(() => {
-          window.location.href = result.redirect_url!;
-        }, 800);
-      } else {
-        setPaying(false);
-        setErrorMsg('Unsupported payment provider configuration.');
+    mountSumUpCard(
+      paymentResponse.checkout_id!,
+      'sumup-card-container',
+      async () => {
+        if (!isMountedRef.current) return;
+
+        // Payment succeeded — confirm with backend
+        try {
+          await confirmSumUpPayment(session!.id, paymentResponse.checkout_id!);
+          if (!isMountedRef.current) return;
+          setPhase('success');
+          setTimeout(() => {
+            window.location.href = 'https://api.nexflowx.tech/success';
+          }, 1500);
+        } catch (err) {
+          if (!isMountedRef.current) return;
+          console.error('[Checkout] Confirmation error:', err);
+          setPhase('paying');
+          setErrorMsg(tr.paymentConfirmError);
+        }
+      },
+      (err) => {
+        if (!isMountedRef.current) return;
+        console.error('[Checkout] SumUp error:', err);
+        setErrorMsg(err);
       }
-    } catch (err) {
-      console.error('[Checkout] Payment initiation error:', err);
-      setPaying(false);
-      setErrorMsg(tr.paymentFailedMsg);
-    }
-  }, [session, form, tr.paymentFailedMsg]);
+    );
+  }, [phase, paymentResponse, session, tr.paymentConfirmError]);
 
-  // ─── Cancel SumUp payment ───────────────────────────────────────────────
-  const handleCancelPayment = useCallback(() => {
-    setPhase('form');
-    setPaying(false);
-    setErrorMsg('');
+  // ─── Stripe payment success callback ────────────────────────────────────
+  const handleStripeSuccess = useCallback(() => {
+    if (!isMountedRef.current) return;
+    setPhase('success');
+    setTimeout(() => {
+      window.location.href = 'https://api.nexflowx.tech/success';
+    }, 1500);
   }, []);
 
   // ─── Retry from error ───────────────────────────────────────────────────
   const handleRetry = useCallback(() => {
     setPhase('loading');
     setErrorMsg('');
+    initiateCalledRef.current = false;
     if (txId) {
       fetchCheckoutSession(txId)
         .then((data) => { setSession(data); setPhase('form'); })
@@ -489,6 +608,26 @@ export default function CheckoutPage() {
   const accentColor = session?.branding?.accent_color ?? '#f5f5f5';
   const logoUrl = session?.branding?.logo_url ?? '';
   const currencyLocale = CURRENCY_LOCALES[locale] ?? 'en-US';
+
+  // ─── Stripe Elements options ────────────────────────────────────────────
+  const clientSecret = paymentResponse?.client_secret ?? null;
+  const accentColorVal = session?.branding?.accent_color ?? '#1a1a2e';
+
+  const stripeElementsOptions = clientSecret
+    ? {
+        clientSecret,
+        appearance: {
+          theme: 'flat' as const,
+          variables: {
+            colorPrimary: accentColorVal,
+            colorBackground: '#ffffff',
+            colorText: '#30313d',
+            borderRadius: '8px',
+            fontFamily: 'inherit',
+          },
+        },
+      }
+    : null;
 
   // ─── Render by phase ─────────────────────────────────────────────────────
   if (phase === 'loading') return <CheckoutLoading />;
@@ -527,300 +666,330 @@ export default function CheckoutPage() {
           <LanguageSwitcher locale={locale} onChange={setLocale} />
         </motion.div>
 
-        {/* ─── PHASE: SumUp Payment Widget ─────────────────────────────── */}
-        {phase === 'external_payment' ? (
-          <motion.div
-            key="sumup-view"
-            initial={{ opacity: 0, y: 16 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="mx-auto max-w-lg rounded-2xl border border-gray-200 bg-white p-4 shadow-sm sm:p-6 md:p-10"
-          >
-            {/* Top bar: back + merchant */}
-            <div className="mb-5 flex items-center justify-between">
-              <button
-                onClick={handleCancelPayment}
-                className="flex items-center gap-1.5 text-sm text-gray-500 transition-colors hover:text-gray-900"
-              >
-                <ArrowLeft className="h-4 w-4" />
-                <span className="hidden sm:inline">{tr.cancelAndGoBack}</span>
-              </button>
-              {logoUrl && (
-                <img src={logoUrl} alt={session.merchant_name} className="h-6 w-auto object-contain sm:h-8" />
-              )}
-            </div>
-
-            <h2 className="mb-1 text-lg font-semibold text-gray-900">{tr.completePayment}</h2>
-            <p className="mb-5 text-sm text-gray-500">
-              {session.merchant_name} — {formatCurrency(session.amount, session.currency, currencyLocale)}
-            </p>
-
-            {/* SumUp card container — mountSumUpCard polls for this */}
-            <div
-              id="sumup-card-container"
-              className="min-h-[280px] rounded-xl border border-gray-100 bg-gray-50/50 p-3 sm:min-h-[300px] sm:p-4"
+        {/* ─── Main Layout: Form + Summary ──────────────────────────────── */}
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-5 lg:gap-8">
+          {/* LEFT: Customer Form + Payment Zone */}
+          <div className="lg:col-span-3">
+            {/* Mobile summary (hidden on desktop) */}
+            <MobileSummary
+              session={session}
+              brandColor={brandColor}
+              accentColor={accentColor}
+              currencyLocale={currencyLocale}
+              tr={tr}
             />
 
-            {/* Loading states */}
-            <div className="mt-4 flex items-center justify-center gap-2 text-sm text-gray-400">
-              {confirming ? (
-                <>
-                  <CheckCircle2 className="h-4 w-4 text-emerald-500" />
-                  <span>A confirmar pagamento...</span>
-                </>
-              ) : paying ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  <span>{tr.processing}</span>
-                </>
-              ) : null}
-            </div>
-          </motion.div>
-        ) : (
-          /* ─── PHASE: Form + Summary ──────────────────────────────────── */
-          <div className="grid grid-cols-1 gap-6 lg:grid-cols-5 lg:gap-8">
-            {/* LEFT: Customer Form */}
-            <div className="lg:col-span-3">
-              {/* Mobile summary (hidden on desktop) */}
-              <MobileSummary
-                session={session}
-                brandColor={brandColor}
-                accentColor={accentColor}
-                currencyLocale={currencyLocale}
-                tr={tr}
-              />
+            {/* ─── Customer Data Card ──────────────────────────────────── */}
+            <motion.div
+              key="form-view"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.3 }}
+              className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm sm:p-5 md:p-8"
+            >
+              <div className="mb-5 flex items-center gap-2.5">
+                <div
+                  className="flex h-7 w-7 items-center justify-center rounded-lg sm:h-8 sm:w-8"
+                  style={{ backgroundColor: brandColor }}
+                >
+                  <CreditCard className="h-3.5 w-3.5 text-white sm:h-4 sm:w-4" />
+                </div>
+                <h2 className="text-sm font-semibold text-gray-900 sm:text-base">{tr.paymentDetails}</h2>
+              </div>
 
-              <motion.div
-                key="form-view"
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.3 }}
-                className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm sm:p-5 md:p-8"
-              >
-                <div className="mb-5 flex items-center gap-2.5">
-                  <div
-                    className="flex h-7 w-7 items-center justify-center rounded-lg sm:h-8 sm:w-8"
-                    style={{ backgroundColor: brandColor }}
-                  >
-                    <CreditCard className="h-3.5 w-3.5 text-white sm:h-4 sm:w-4" />
-                  </div>
-                  <h2 className="text-sm font-semibold text-gray-900 sm:text-base">{tr.paymentDetails}</h2>
+              <div className="space-y-4 sm:space-y-5">
+                {/* Name */}
+                <div className="space-y-1.5">
+                  <Label htmlFor="name" className="flex items-center gap-1.5 text-gray-700">
+                    <User className="h-3.5 w-3.5 text-gray-400" />
+                    {tr.fullName} <span className="text-red-400">*</span>
+                  </Label>
+                  <Input
+                    id="name"
+                    type="text"
+                    placeholder={tr.fullNamePlaceholder}
+                    value={form.customer_name}
+                    onChange={(e) => handleFieldChange('customer_name', e.target.value)}
+                    className="h-10 rounded-lg text-sm sm:h-11"
+                    style={inputStyle}
+                    autoComplete="name"
+                  />
                 </div>
 
-                <div className="space-y-4 sm:space-y-5">
-                  {/* Name */}
-                  <div className="space-y-1.5">
-                    <Label htmlFor="name" className="flex items-center gap-1.5 text-gray-700">
-                      <User className="h-3.5 w-3.5 text-gray-400" />
-                      {tr.fullName}
-                    </Label>
-                    <Input
-                      id="name"
-                      type="text"
-                      placeholder={tr.fullNamePlaceholder}
-                      value={form.customer_name}
-                      onChange={(e) => handleFieldChange('customer_name', e.target.value)}
-                      className="h-10 rounded-lg text-sm sm:h-11"
-                      style={inputStyle}
-                      autoComplete="name"
-                    />
-                  </div>
+                {/* Email */}
+                <div className="space-y-1.5">
+                  <Label htmlFor="email" className="flex items-center gap-1.5 text-gray-700">
+                    <Mail className="h-3.5 w-3.5 text-gray-400" />
+                    {tr.email} <span className="text-red-400">*</span>
+                  </Label>
+                  <Input
+                    id="email"
+                    type="email"
+                    placeholder={tr.emailPlaceholder}
+                    value={form.customer_email}
+                    onChange={(e) => handleFieldChange('customer_email', e.target.value)}
+                    className={`h-10 rounded-lg text-sm sm:h-11 ${
+                      form.customer_email && !isValidEmail(form.customer_email)
+                        ? 'border-red-300 focus-visible:ring-red-300'
+                        : form.customer_email && isValidEmail(form.customer_email)
+                        ? 'border-emerald-300 focus-visible:ring-emerald-300'
+                        : ''
+                    }`}
+                    style={inputStyle}
+                    autoComplete="email"
+                  />
+                </div>
 
-                  {/* Email */}
-                  <div className="space-y-1.5">
-                    <Label htmlFor="email" className="flex items-center gap-1.5 text-gray-700">
-                      <Mail className="h-3.5 w-3.5 text-gray-400" />
-                      {tr.email}
-                    </Label>
-                    <Input
-                      id="email"
-                      type="email"
-                      placeholder={tr.emailPlaceholder}
-                      value={form.customer_email}
-                      onChange={(e) => handleFieldChange('customer_email', e.target.value)}
-                      className="h-10 rounded-lg text-sm sm:h-11"
-                      style={inputStyle}
-                      autoComplete="email"
-                    />
-                  </div>
+                {/* Phone */}
+                <div className="space-y-1.5">
+                  <Label htmlFor="phone" className="flex items-center gap-1.5 text-gray-700">
+                    <Phone className="h-3.5 w-3.5 text-gray-400" />
+                    {tr.phone}
+                  </Label>
+                  <Input
+                    id="phone"
+                    type="tel"
+                    placeholder={tr.phonePlaceholder}
+                    value={form.customer_phone}
+                    onChange={(e) => handleFieldChange('customer_phone', e.target.value)}
+                    className="h-10 rounded-lg text-sm sm:h-11"
+                    style={inputStyle}
+                    autoComplete="tel"
+                  />
+                </div>
 
-                  {/* Phone */}
-                  <div className="space-y-1.5">
-                    <Label htmlFor="phone" className="flex items-center gap-1.5 text-gray-700">
-                      <Phone className="h-3.5 w-3.5 text-gray-400" />
-                      {tr.phone}
-                    </Label>
-                    <Input
-                      id="phone"
-                      type="tel"
-                      placeholder={tr.phonePlaceholder}
-                      value={form.customer_phone}
-                      onChange={(e) => handleFieldChange('customer_phone', e.target.value)}
-                      className="h-10 rounded-lg text-sm sm:h-11"
-                      style={inputStyle}
-                      autoComplete="tel"
-                    />
-                  </div>
+                {/* Address */}
+                <div className="space-y-1.5">
+                  <Label htmlFor="address" className="flex items-center gap-1.5 text-gray-700">
+                    <MapPin className="h-3.5 w-3.5 text-gray-400" />
+                    {tr.address}
+                  </Label>
+                  <Input
+                    id="address"
+                    type="text"
+                    placeholder={tr.addressPlaceholder}
+                    value={form.address}
+                    onChange={(e) => handleFieldChange('address', e.target.value)}
+                    className="h-10 rounded-lg text-sm sm:h-11"
+                    style={inputStyle}
+                    autoComplete="street-address"
+                  />
+                </div>
 
-                  {/* Address */}
-                  <div className="space-y-1.5">
-                    <Label htmlFor="address" className="flex items-center gap-1.5 text-gray-700">
-                      <MapPin className="h-3.5 w-3.5 text-gray-400" />
-                      {tr.address}
-                    </Label>
-                    <Input
-                      id="address"
-                      type="text"
-                      placeholder={tr.addressPlaceholder}
-                      value={form.address}
-                      onChange={(e) => handleFieldChange('address', e.target.value)}
-                      className="h-10 rounded-lg text-sm sm:h-11"
-                      style={inputStyle}
-                      autoComplete="street-address"
-                    />
-                  </div>
+                {/* Country */}
+                <div className="space-y-1.5">
+                  <Label htmlFor="country" className="flex items-center gap-1.5 text-gray-700">
+                    <Globe className="h-3.5 w-3.5 text-gray-400" />
+                    {tr.country}
+                  </Label>
+                  <Select
+                    value={form.country}
+                    onValueChange={(val) => handleFieldChange('country', val)}
+                  >
+                    <SelectTrigger id="country" className="h-10 w-full rounded-lg text-sm sm:h-11" style={inputStyle}>
+                      <SelectValue placeholder={tr.selectCountry} />
+                    </SelectTrigger>
+                    <SelectContent className="max-h-64 overflow-y-auto">
+                      {COUNTRIES.map((c) => (
+                        <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
 
-                  {/* Country */}
-                  <div className="space-y-1.5">
-                    <Label htmlFor="country" className="flex items-center gap-1.5 text-gray-700">
-                      <Globe className="h-3.5 w-3.5 text-gray-400" />
-                      {tr.country}
-                    </Label>
-                    <Select
-                      value={form.country}
-                      onValueChange={(val) => handleFieldChange('country', val)}
-                    >
-                      <SelectTrigger id="country" className="h-10 w-full rounded-lg text-sm sm:h-11" style={inputStyle}>
-                        <SelectValue placeholder={tr.selectCountry} />
-                      </SelectTrigger>
-                      <SelectContent className="max-h-64 overflow-y-auto">
-                        {COUNTRIES.map((c) => (
-                          <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-
-                  {/* Error message */}
+                {/* Error message */}
+                <AnimatePresence>
                   {errorMsg && (
                     <motion.div
                       initial={{ opacity: 0, height: 0 }}
                       animate={{ opacity: 1, height: 'auto' }}
+                      exit={{ opacity: 0, height: 0 }}
                       className="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-3 text-sm text-red-700"
                     >
                       <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-                      <span>{errorMsg}</span>
-                      <button onClick={() => setErrorMsg('')} className="ml-auto shrink-0">
+                      <span className="flex-1">{errorMsg}</span>
+                      <button onClick={() => setErrorMsg('')} className="shrink-0">
                         <X className="h-4 w-4 text-red-400" />
                       </button>
                     </motion.div>
                   )}
+                </AnimatePresence>
 
-                  {/* Pay Button */}
-                  <Button
-                    onClick={handlePay}
-                    disabled={paying || !form.customer_name.trim() || !form.customer_email.trim()}
-                    className="group relative mt-1 h-12 w-full rounded-xl text-sm font-semibold text-white shadow-lg transition-all hover:shadow-xl hover:brightness-110 active:scale-[0.98] disabled:opacity-50 disabled:hover:brightness-100"
+                {/* Auto-save indicator */}
+                <AnimatePresence>
+                  {saving && (
+                    <motion.p
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      exit={{ opacity: 0 }}
+                      className="flex items-center justify-center gap-1.5 text-xs text-gray-400"
+                    >
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                      {tr.saving}
+                    </motion.p>
+                  )}
+                </AnimatePresence>
+              </div>
+            </motion.div>
+
+            {/* ─── Initiating Spinner (auto-initiate in background) ──── */}
+            <AnimatePresence>
+              {phase === 'initiating' && (
+                <motion.div
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -5 }}
+                  transition={{ duration: 0.3 }}
+                  className="mt-4 flex items-center justify-center gap-2 rounded-2xl border border-gray-100 bg-white px-4 py-5 text-sm text-gray-500 shadow-sm"
+                >
+                  <Loader2 className="h-4 w-4 animate-spin" style={{ color: brandColor }} />
+                  <span>{tr.preparingPayment}</span>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            {/* ─── Payment Zone (revealed via Progressive Disclosure) ── */}
+            <AnimatePresence>
+              {phase === 'paying' && paymentResponse && (
+                <motion.div
+                  key="payment-zone"
+                  initial={{ opacity: 0, y: 16, height: 0 }}
+                  animate={{ opacity: 1, y: 0, height: 'auto' }}
+                  exit={{ opacity: 0, y: -8, height: 0 }}
+                  transition={{ duration: 0.4, ease: 'easeOut' }}
+                  className="mt-4 overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm"
+                >
+                  {/* Payment zone header */}
+                  <div className="flex items-center gap-2.5 border-b border-gray-100 px-4 py-3 sm:px-5 sm:py-4 md:px-8">
+                    <motion.div
+                      initial={{ scale: 0 }}
+                      animate={{ scale: 1 }}
+                      transition={{ type: 'spring', stiffness: 200, damping: 15, delay: 0.15 }}
+                      className="flex h-7 w-7 items-center justify-center rounded-full bg-emerald-50 sm:h-8 sm:w-8"
+                    >
+                      <Sparkles className="h-3.5 w-3.5 text-emerald-500 sm:h-4 sm:w-4" />
+                    </motion.div>
+                    <div className="flex-1">
+                      <h3 className="text-sm font-semibold text-gray-900">
+                        {formatCurrency(session.amount, session.currency, currencyLocale)}
+                      </h3>
+                      <p className="text-xs text-gray-400">{tr.paymentReady}</p>
+                    </div>
+                    {paymentResponse.provider === 'stripe' && (
+                      <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-medium text-gray-500">
+                        {tr.poweredBy} Stripe
+                      </span>
+                    )}
+                    {paymentResponse.provider === 'sumup' && (
+                      <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-medium text-gray-500">
+                        {tr.poweredBy} SumUp
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Payment content */}
+                  <div className="px-4 py-4 sm:px-5 sm:py-5 md:px-8 md:py-6">
+                    {paymentResponse.provider === 'stripe' && stripeElementsOptions && (
+                      <Elements
+                        stripe={getStripePromise()}
+                        options={stripeElementsOptions}
+                      >
+                        <StripePaymentForm
+                          session={session}
+                          brandColor={brandColor}
+                          tr={tr}
+                          onSuccess={handleStripeSuccess}
+                          onError={setErrorMsg}
+                        />
+                      </Elements>
+                    )}
+
+                    {paymentResponse.provider === 'sumup' && (
+                      <div>
+                        {/* SumUp card container — always rendered in DOM, mountSumUpCard polls for it */}
+                        <div
+                          id="sumup-card-container"
+                          className="min-h-[280px] rounded-xl border border-gray-100 bg-gray-50/50 p-3 sm:min-h-[300px] sm:p-4"
+                        />
+                        {/* SumUp processing indicator */}
+                        <div className="mt-3 flex items-center justify-center gap-2 text-sm text-gray-400">
+                          <CreditCard className="h-3.5 w-3.5" />
+                          <span>{tr.insertCardData}</span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            {/* Trust badges */}
+            <div className="mt-3 flex flex-wrap items-center justify-center gap-3 text-[11px] text-gray-400 sm:mt-4 sm:gap-4 sm:text-xs">
+              <div className="flex items-center gap-1"><Shield className="h-3 w-3" /><span>{tr.sslEncrypted}</span></div>
+              <div className="flex items-center gap-1"><Lock className="h-3 w-3" /><span>{tr.securePayment}</span></div>
+              <div className="flex items-center gap-1"><CreditCard className="h-3 w-3" /><span>{tr.pciCompliant}</span></div>
+            </div>
+          </div>
+
+          {/* RIGHT: Order Summary (desktop only) */}
+          <div className="hidden lg:col-span-2 lg:block">
+            <div className="sticky top-6 rounded-2xl border border-gray-200 bg-white p-5 shadow-sm md:p-6">
+              <h3 className="mb-4 text-xs font-semibold uppercase tracking-wider text-gray-500">
+                {tr.orderSummary}
+              </h3>
+
+              <div
+                className="mb-5 flex items-center gap-3 rounded-xl p-3"
+                style={{ backgroundColor: accentColor }}
+              >
+                {logoUrl ? (
+                  <img src={logoUrl} alt={session.merchant_name} className="h-12 w-auto max-w-[140px] object-contain" />
+                ) : (
+                  <div
+                    className="flex h-10 w-10 items-center justify-center rounded-lg text-sm font-bold text-white"
                     style={{ backgroundColor: brandColor }}
                   >
-                    {paying ? (
-                      <>
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                        {tr.processing}
-                      </>
-                    ) : (
-                      <>
-                        <Lock className="h-4 w-4 transition-transform group-hover:scale-110" />
-                        {tr.pay} {formatCurrency(session.amount, session.currency, currencyLocale)}
-                        <ChevronRight className="ml-auto h-4 w-4 transition-transform group-hover:translate-x-0.5" />
-                      </>
-                    )}
-                  </Button>
-
-                  {/* Auto-save indicator */}
-                  <AnimatePresence>
-                    {saving && (
-                      <motion.p
-                        initial={{ opacity: 0 }}
-                        animate={{ opacity: 1 }}
-                        exit={{ opacity: 0 }}
-                        className="flex items-center justify-center gap-1.5 text-xs text-gray-400"
-                      >
-                        <Loader2 className="h-3 w-3 animate-spin" />
-                        {tr.saving}
-                      </motion.p>
-                    )}
-                  </AnimatePresence>
+                    {session.merchant_name.charAt(0).toUpperCase()}
+                  </div>
+                )}
+                <div>
+                  <p className="text-sm font-semibold text-gray-900">{session.merchant_name}</p>
+                  <p className="text-xs text-gray-500">{tr.secureCheckout}</p>
                 </div>
-              </motion.div>
-
-              {/* Trust badges */}
-              <div className="mt-3 flex flex-wrap items-center justify-center gap-3 text-[11px] text-gray-400 sm:mt-4 sm:gap-4 sm:text-xs">
-                <div className="flex items-center gap-1"><Shield className="h-3 w-3" /><span>{tr.sslEncrypted}</span></div>
-                <div className="flex items-center gap-1"><Lock className="h-3 w-3" /><span>{tr.securePayment}</span></div>
-                <div className="flex items-center gap-1"><CreditCard className="h-3 w-3" /><span>{tr.pciCompliant}</span></div>
               </div>
-            </div>
 
-            {/* RIGHT: Order Summary (desktop only) */}
-            <div className="hidden lg:col-span-2 lg:block">
-              <div className="sticky top-6 rounded-2xl border border-gray-200 bg-white p-5 shadow-sm md:p-6">
-                <h3 className="mb-4 text-xs font-semibold uppercase tracking-wider text-gray-500">
-                  {tr.orderSummary}
-                </h3>
-
-                <div
-                  className="mb-5 flex items-center gap-3 rounded-xl p-3"
-                  style={{ backgroundColor: accentColor }}
-                >
-                  {logoUrl ? (
-                    <img src={logoUrl} alt={session.merchant_name} className="h-12 w-auto max-w-[140px] object-contain" />
-                  ) : (
-                    <div
-                      className="flex h-10 w-10 items-center justify-center rounded-lg text-sm font-bold text-white"
-                      style={{ backgroundColor: brandColor }}
-                    >
-                      {session.merchant_name.charAt(0).toUpperCase()}
-                    </div>
-                  )}
-                  <div>
-                    <p className="text-sm font-semibold text-gray-900">{session.merchant_name}</p>
-                    <p className="text-xs text-gray-500">{tr.secureCheckout}</p>
-                  </div>
+              <div className="space-y-3">
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-gray-500">{tr.transactionId}</span>
+                  <span className="font-mono text-xs text-gray-700">{session.id}</span>
                 </div>
-
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between text-sm">
-                    <span className="text-gray-500">{tr.transactionId}</span>
-                    <span className="font-mono text-xs text-gray-700">{session.id}</span>
-                  </div>
-                  <div className="flex items-center justify-between text-sm">
-                    <span className="text-gray-500">{tr.currencyLabel}</span>
-                    <span className="font-medium text-gray-700">{session.currency.toUpperCase()}</span>
-                  </div>
-                  <div className="flex items-center justify-between text-sm">
-                    <span className="text-gray-500">{tr.paymentMethod}</span>
-                    <span className="font-medium text-gray-700">
-                      {session.allowed_methods.map((m) => m.charAt(0).toUpperCase() + m.slice(1)).join(', ')}
-                    </span>
-                  </div>
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-gray-500">{tr.currencyLabel}</span>
+                  <span className="font-medium text-gray-700">{session.currency.toUpperCase()}</span>
                 </div>
-
-                <Separator className="my-4" />
-
-                <div className="flex items-center justify-between">
-                  <span className="text-sm font-semibold text-gray-900">{tr.total}</span>
-                  <span className="text-2xl font-bold tracking-tight" style={{ color: brandColor }}>
-                    {formatCurrency(session.amount, session.currency, currencyLocale)}
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-gray-500">{tr.paymentMethod}</span>
+                  <span className="font-medium text-gray-700">
+                    {session.allowed_methods.map((m) => m.charAt(0).toUpperCase() + m.slice(1)).join(', ')}
                   </span>
                 </div>
               </div>
 
-              <div className="mt-4 text-center">
-                <p className="text-[11px] leading-relaxed text-gray-400">{tr.secureHostedCheckout}</p>
+              <Separator className="my-4" />
+
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-semibold text-gray-900">{tr.total}</span>
+                <span className="text-2xl font-bold tracking-tight" style={{ color: brandColor }}>
+                  {formatCurrency(session.amount, session.currency, currencyLocale)}
+                </span>
               </div>
             </div>
+
+            <div className="mt-4 text-center">
+              <p className="text-[11px] leading-relaxed text-gray-400">{tr.secureHostedCheckout}</p>
+            </div>
           </div>
-        )}
+        </div>
       </div>
     </div>
   );

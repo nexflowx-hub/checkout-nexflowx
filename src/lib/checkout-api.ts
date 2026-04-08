@@ -45,6 +45,7 @@ export async function patchCustomerData(
 
 /**
  * Initiate payment — returns provider-specific response.
+ * Backend v3.0 returns { provider: 'sumup'|'stripe', checkout_id?, client_secret? }
  */
 export async function initiatePayment(
   txId: string
@@ -75,6 +76,40 @@ export async function confirmSumUpPayment(txId: string, checkoutId: string): Pro
     throw new Error(`Payment confirmation failed (${res.status})`);
   }
 }
+
+/**
+ * Confirm a Stripe payment with the backend.
+ */
+export async function confirmStripePayment(txId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/stripe/confirm`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ txId }),
+  });
+
+  if (!res.ok) {
+    throw new Error(`Payment confirmation failed (${res.status})`);
+  }
+}
+
+// ─── Stripe Loader ─────────────────────────────────────────────────────────────
+
+/**
+ * Lazy-load Stripe.js and return a Promise<Stripe | null>.
+ * Uses the NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY env var.
+ */
+export function loadStripe(): Promise<any> {
+  // Dynamic import of @stripe/stripe-js to avoid SSR issues
+  const key = process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY || '';
+  if (!key) {
+    console.warn('[Checkout] NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY is not set.');
+    return Promise.resolve(null);
+  }
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  return require('@stripe/stripe-js').loadStripe(key);
+}
+
+// ─── SumUp SDK Loader ──────────────────────────────────────────────────────────
 
 /**
  * Poll for a DOM element by id until it appears or timeout.
@@ -189,6 +224,8 @@ export async function mountSumUpCard(
     document.head.appendChild(script);
   });
 }
+
+// ─── Utilities ─────────────────────────────────────────────────────────────────
 
 /**
  * Detect buyer's country from IP using free geolocation API.

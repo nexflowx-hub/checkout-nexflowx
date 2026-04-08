@@ -20,9 +20,16 @@ export interface CheckoutTranslations {
   country: string;
   selectCountry: string;
 
-  // Pay button
-  pay: string;
+  // Progressive disclosure
+  preparingPayment: string;
+  paymentReady: string;
+
+  // Pay button / Stripe
+  confirmPayment: string;
   processing: string;
+
+  // SumUp
+  insertCardData: string;
 
   // Auto-save
   saving: string;
@@ -33,15 +40,14 @@ export interface CheckoutTranslations {
   sessionExpiredShort: string;
   tryAgain: string;
   paymentFailedMsg: string;
+  paymentConfirmError: string;
+  cardNotFound: string;
 
   // Processing
   processingPayment: string;
+  confirmingPayment: string;
   redirectingTo: string;
   doNotClose: string;
-
-  // External payment (SumUp)
-  completePayment: string;
-  cancelAndGoBack: string;
 
   // Order summary
   orderSummary: string;
@@ -61,6 +67,7 @@ export interface CheckoutTranslations {
 
   // Payment methods
   card: string;
+  poweredBy: string;
 }
 
 const en: CheckoutTranslations = {
@@ -77,19 +84,23 @@ const en: CheckoutTranslations = {
   addressPlaceholder: '123 Main Street',
   country: 'Country',
   selectCountry: 'Select country',
-  pay: 'Pay',
+  preparingPayment: 'Preparing payment...',
+  paymentReady: 'Payment ready',
+  confirmPayment: 'Confirm Payment',
   processing: 'Processing...',
+  insertCardData: 'Enter Card Details',
   saving: 'Saving...',
   sessionInvalid: 'Session Invalid',
   sessionExpiredMsg: 'This checkout session is invalid or has expired. Please contact the merchant for a new payment link.',
   sessionExpiredShort: 'This checkout session is invalid or has expired.',
   tryAgain: 'Try Again',
   paymentFailedMsg: 'Could not initiate payment. Please try again.',
+  paymentConfirmError: 'Payment accepted but confirmation failed.',
+  cardNotFound: 'Payment element not found. Please reload the page.',
   processingPayment: 'Processing Payment',
+  confirmingPayment: 'Confirming payment...',
   redirectingTo: 'Redirecting to',
   doNotClose: 'Please do not close this page.',
-  completePayment: 'Complete Payment',
-  cancelAndGoBack: 'Cancel and go back',
   orderSummary: 'Order Summary',
   secureCheckout: 'Secure Checkout',
   transactionId: 'Transaction ID',
@@ -101,6 +112,7 @@ const en: CheckoutTranslations = {
   pciCompliant: 'PCI Compliant',
   secureHostedCheckout: 'Secure hosted checkout',
   card: 'Card',
+  poweredBy: 'Powered by',
 };
 
 const pt: CheckoutTranslations = {
@@ -117,19 +129,23 @@ const pt: CheckoutTranslations = {
   addressPlaceholder: 'Rua Principal, 123',
   country: 'País',
   selectCountry: 'Selecionar país',
-  pay: 'Pagar',
+  preparingPayment: 'A preparar pagamento...',
+  paymentReady: 'Pagamento pronto',
+  confirmPayment: 'Confirmar Pagamento',
   processing: 'A processar...',
+  insertCardData: 'Inserir Dados do Cartão',
   saving: 'A guardar...',
   sessionInvalid: 'Sessão Inválida',
   sessionExpiredMsg: 'Esta sessão de checkout é inválida ou expirou. Contacte o comerciante para obter um novo link de pagamento.',
   sessionExpiredShort: 'Esta sessão de checkout é inválida ou expirou.',
   tryAgain: 'Tentar Novamente',
   paymentFailedMsg: 'Não foi possível iniciar o pagamento. Tente novamente.',
+  paymentConfirmError: 'O pagamento foi aceite, mas ocorreu um erro na confirmação.',
+  cardNotFound: 'Elemento de pagamento não encontrado. Recarregue a página.',
   processingPayment: 'A Processar Pagamento',
-  redirectingTo: 'A redirecionar para o provedor de pagamento de',
+  confirmingPayment: 'A confirmar pagamento...',
+  redirectingTo: 'A redirecionar para',
   doNotClose: 'Por favor, não feche esta página.',
-  completePayment: 'Completar Pagamento',
-  cancelAndGoBack: 'Cancelar e voltar',
   orderSummary: 'Resumo da Encomenda',
   secureCheckout: 'Checkout Seguro',
   transactionId: 'ID da Transação',
@@ -141,6 +157,7 @@ const pt: CheckoutTranslations = {
   pciCompliant: 'Conforme PCI',
   secureHostedCheckout: 'Checkout seguro',
   card: 'Cartão',
+  poweredBy: 'Distribuído por',
 };
 
 const es: CheckoutTranslations = {
@@ -157,19 +174,23 @@ const es: CheckoutTranslations = {
   addressPlaceholder: 'Calle Mayor, 123',
   country: 'País',
   selectCountry: 'Seleccionar país',
-  pay: 'Pagar',
+  preparingPayment: 'Preparando pago...',
+  paymentReady: 'Pago listo',
+  confirmPayment: 'Confirmar Pago',
   processing: 'Procesando...',
+  insertCardData: 'Ingresar Datos de Tarjeta',
   saving: 'Guardando...',
   sessionInvalid: 'Sesión Inválida',
   sessionExpiredMsg: 'Esta sesión de pago es inválida o ha expirado. Contacte al comerciante para obtener un nuevo enlace de pago.',
   sessionExpiredShort: 'Esta sesión de pago es inválida o ha expirado.',
   tryAgain: 'Intentar de Nuevo',
   paymentFailedMsg: 'No se pudo iniciar el pago. Inténtelo de nuevo.',
+  paymentConfirmError: 'El pago fue aceptado pero ocurrió un error en la confirmación.',
+  cardNotFound: 'Elemento de pago no encontrado. Recargue la página.',
   processingPayment: 'Procesando Pago',
-  redirectingTo: 'Redirigiendo al proveedor de pago de',
+  confirmingPayment: 'Confirmando pago...',
+  redirectingTo: 'Redirigiendo a',
   doNotClose: 'Por favor, no cierre esta página.',
-  completePayment: 'Completar Pago',
-  cancelAndGoBack: 'Cancelar y volver',
   orderSummary: 'Resumen del Pedido',
   secureCheckout: 'Pago Seguro',
   transactionId: 'ID de Transacción',
@@ -181,6 +202,7 @@ const es: CheckoutTranslations = {
   pciCompliant: 'Conforme PCI',
   secureHostedCheckout: 'Checkout seguro',
   card: 'Tarjeta',
+  poweredBy: 'Desarrollado por',
 };
 
 const fr: CheckoutTranslations = {
@@ -197,19 +219,23 @@ const fr: CheckoutTranslations = {
   addressPlaceholder: '123 Rue Principale',
   country: 'Pays',
   selectCountry: 'Sélectionner le pays',
-  pay: 'Payer',
+  preparingPayment: 'Préparation du paiement...',
+  paymentReady: 'Paiement prêt',
+  confirmPayment: 'Confirmer le Paiement',
   processing: 'Traitement...',
+  insertCardData: 'Saisir les Coordonnées',
   saving: 'Enregistrement...',
   sessionInvalid: 'Session Invalide',
   sessionExpiredMsg: 'Cette session de paiement est invalide ou a expiré. Veuillez contacter le marchand pour obtenir un nouveau lien de paiement.',
   sessionExpiredShort: 'Cette session de paiement est invalide ou a expiré.',
   tryAgain: 'Réessayer',
   paymentFailedMsg: 'Impossible de lancer le paiement. Veuillez réessayer.',
+  paymentConfirmError: 'Le paiement a été accepté mais la confirmation a échoué.',
+  cardNotFound: 'Élément de paiement introuvable. Veuillez recharger la page.',
   processingPayment: 'Traitement du Paiement',
-  redirectingTo: 'Redirection vers le prestataire de paiement de',
+  confirmingPayment: 'Confirmation du paiement...',
+  redirectingTo: 'Redirection vers',
   doNotClose: 'Veuillez ne pas fermer cette page.',
-  completePayment: 'Compléter le Paiement',
-  cancelAndGoBack: 'Annuler et revenir',
   orderSummary: 'Résumé de la Commande',
   secureCheckout: 'Paiement Sécurisé',
   transactionId: 'ID de Transaction',
@@ -221,6 +247,7 @@ const fr: CheckoutTranslations = {
   pciCompliant: 'Conforme PCI',
   secureHostedCheckout: 'Checkout sécurisé',
   card: 'Carte',
+  poweredBy: 'Propulsé par',
 };
 
 const de: CheckoutTranslations = {
@@ -237,19 +264,23 @@ const de: CheckoutTranslations = {
   addressPlaceholder: 'Hauptstraße 123',
   country: 'Land',
   selectCountry: 'Land auswählen',
-  pay: 'Bezahlen',
+  preparingPayment: 'Zahlung wird vorbereitet...',
+  paymentReady: 'Zahlung bereit',
+  confirmPayment: 'Zahlung Bestätigen',
   processing: 'Verarbeitung...',
+  insertCardData: 'Kartendaten Eingeben',
   saving: 'Speichern...',
   sessionInvalid: 'Sitzung Ungültig',
   sessionExpiredMsg: 'Diese Checkout-Sitzung ist ungültig oder abgelaufen. Bitte kontaktieren Sie den Händler für einen neuen Zahlungslink.',
   sessionExpiredShort: 'Diese Checkout-Sitzung ist ungültig oder abgelaufen.',
   tryAgain: 'Erneut Versuchen',
   paymentFailedMsg: 'Zahlung konnte nicht gestartet werden. Bitte versuchen Sie es erneut.',
+  paymentConfirmError: 'Zahlung akzeptiert, aber Bestätigung fehlgeschlagen.',
+  cardNotFound: 'Zahlungselement nicht gefunden. Bitte laden Sie die Seite neu.',
   processingPayment: 'Zahlung wird Verarbeitet',
-  redirectingTo: 'Weiterleitung zum Zahlungsanbieter von',
+  confirmingPayment: 'Zahlung wird bestätigt...',
+  redirectingTo: 'Weiterleitung zu',
   doNotClose: 'Bitte schließen Sie diese Seite nicht.',
-  completePayment: 'Zahlung Abschließen',
-  cancelAndGoBack: 'Abbrechen und zurück',
   orderSummary: 'Bestellübersicht',
   secureCheckout: 'Sichere Bezahlung',
   transactionId: 'Transaktions-ID',
@@ -261,6 +292,7 @@ const de: CheckoutTranslations = {
   pciCompliant: 'PCI-Konform',
   secureHostedCheckout: 'Sicheres Checkout',
   card: 'Karte',
+  poweredBy: 'Betrieben von',
 };
 
 const it: CheckoutTranslations = {
@@ -277,19 +309,23 @@ const it: CheckoutTranslations = {
   addressPlaceholder: 'Via Principale, 123',
   country: 'Paese',
   selectCountry: 'Selezionare il paese',
-  pay: 'Paga',
+  preparingPayment: 'Preparazione pagamento...',
+  paymentReady: 'Pagamento pronto',
+  confirmPayment: 'Conferma Pagamento',
   processing: 'Elaborazione...',
+  insertCardData: 'Inserisci Dati Carta',
   saving: 'Salvataggio...',
   sessionInvalid: 'Sessione Non Valida',
   sessionExpiredMsg: 'Questa sessione di pagamento non è valida o è scaduta. Contattare il venditore per un nuovo link di pagamento.',
   sessionExpiredShort: 'Questa sessione di pagamento non è valida o è scaduta.',
   tryAgain: 'Riprova',
   paymentFailedMsg: 'Impossibile avviare il pagamento. Riprova.',
+  paymentConfirmError: 'Il pagamento è stato accettato ma la conferma è fallita.',
+  cardNotFound: 'Elemento di pagamento non trovato. Ricaricare la pagina.',
   processingPayment: 'Elaborazione del Pagamento',
-  redirectingTo: 'Reindirizzamento al fornitore di pagamento di',
+  confirmingPayment: 'Conferma del pagamento...',
+  redirectingTo: 'Reindirizzamento a',
   doNotClose: 'Non chiudere questa pagina.',
-  completePayment: 'Completa il Pagamento',
-  cancelAndGoBack: 'Annulla e torna',
   orderSummary: 'Riepilogo Ordine',
   secureCheckout: 'Checkout Sicuro',
   transactionId: 'ID Transazione',
@@ -301,6 +337,7 @@ const it: CheckoutTranslations = {
   pciCompliant: 'Conforme PCI',
   secureHostedCheckout: 'Checkout sicuro',
   card: 'Carta',
+  poweredBy: 'Alimentato da',
 };
 
 // ─── Translation registry ──────────────────────────────────────────────────────
