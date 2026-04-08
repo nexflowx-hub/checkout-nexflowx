@@ -32,6 +32,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
+import { toast } from 'sonner';
 import {
   Elements,
   PaymentElement,
@@ -406,10 +407,9 @@ export default function CheckoutPage() {
   const [saving, setSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [paymentResponse, setPaymentResponse] = useState<PaymentInitiateResponse | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
   const sumUpInitiatedRef = useRef(false);
-
   const isMountedRef = useRef(true);
-  const initiateCalledRef = useRef(false);
 
   // ─── Cleanup on unmount ────────────────────────────────────────────────────
   useEffect(() => {
@@ -491,49 +491,47 @@ export default function CheckoutPage() {
     [debouncedSave, session]
   );
 
-  // ─── Progressive Disclosure: auto-initiate when name + email are valid ──
-  const canAutoInitiate =
+  // ─── Manual initiate payment handler (called by button) ───────────────────
+  const isFormValid =
     form.customer_name.trim().length >= 2 &&
     isValidEmail(form.customer_email);
 
-  useEffect(() => {
-    if (!canAutoInitiate || !session || !session.id) return;
-    // Don't re-initiate if already done
-    if (initiateCalledRef.current || paymentResponse) return;
-    // Don't initiate if in a terminal phase
-    if (phase !== 'form') return;
+  const handleInitiatePayment = useCallback(async () => {
+    if (!isFormValid || !session || !session.id) return;
 
-    let cancelled = false;
-    initiateCalledRef.current = true;
-    startTransition(() => setPhase('initiating'));
+    setErrorMsg('');
+    setIsLoading(true);
 
-    initiatePayment(session.id)
-      .then((result) => {
-        if (cancelled || !isMountedRef.current) return;
+    try {
+      const result = await initiatePayment(session.id);
 
-        if (result.provider === 'stripe' && result.client_secret) {
-          setPaymentResponse(result);
-          setPhase('paying');
-        } else if (result.provider === 'sumup' && result.checkout_id) {
-          setPaymentResponse(result);
-          setPhase('paying');
-        } else {
-          // Fallback: unknown provider
-          setPhase('form');
-          setErrorMsg('Unsupported payment provider configuration.');
-        }
-      })
-      .catch((err) => {
-        if (cancelled || !isMountedRef.current) return;
-        console.error('[Checkout] Auto-initiate error:', err);
+      if (!isMountedRef.current) return;
+
+      if (result.provider === 'stripe' && result.client_secret) {
+        setPaymentResponse(result);
+        setPhase('paying');
+        toast.success('Preparado para pagamento com Stripe!');
+      } else if (result.provider === 'sumup' && result.checkout_id) {
+        setPaymentResponse(result);
+        setPhase('paying');
+        toast.success('Preparado para pagamento com SumUp!');
+      } else {
         setPhase('form');
-        setErrorMsg(tr.paymentFailedMsg);
-        // Allow retry
-        initiateCalledRef.current = false;
-      });
-
-    return () => { cancelled = true; };
-  }, [canAutoInitiate, session, paymentResponse, phase, tr.paymentFailedMsg]);
+        setErrorMsg('Unsupported payment provider configuration.');
+        toast.error('Configuração de pagamento não suportada.');
+      }
+    } catch (err: any) {
+      if (!isMountedRef.current) return;
+      console.error('[Checkout] Initiate payment error:', err);
+      setPhase('form');
+      setErrorMsg(err?.message || tr.paymentFailedMsg);
+      toast.error(err?.message || tr.paymentFailedMsg);
+    } finally {
+      if (isMountedRef.current) {
+        setIsLoading(false);
+      }
+    }
+  }, [isFormValid, session, tr.paymentFailedMsg]);
 
   // ─── Handle SumUp card mount (only once when phase is paying + provider is sumup) ──
   useEffect(() => {
@@ -589,7 +587,6 @@ export default function CheckoutPage() {
   const handleRetry = useCallback(() => {
     setPhase('loading');
     setErrorMsg('');
-    initiateCalledRef.current = false;
     if (txId) {
       fetchCheckoutSession(txId)
         .then((data) => { setSession(data); setPhase('form'); })
@@ -830,25 +827,42 @@ export default function CheckoutPage() {
                   )}
                 </AnimatePresence>
               </div>
+
+              {/* ─── Manual "Continue to Payment" Button (Opção B) ─────── */}
+              <AnimatePresence>
+                {phase === 'form' && (
+                  <motion.div
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -5 }}
+                    transition={{ duration: 0.3 }}
+                    className="mt-6"
+                  >
+                    <Button
+                      onClick={handleInitiatePayment}
+                      disabled={!isFormValid || isLoading}
+                      className="group relative h-12 w-full rounded-xl text-sm font-semibold text-white shadow-lg transition-all hover:shadow-xl hover:brightness-110 active:scale-[0.98] disabled:opacity-50 disabled:hover:brightness-100"
+                      style={{ backgroundColor: brandColor }}
+                    >
+                      {isLoading ? (
+                        <>
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                          {tr.processing}
+                        </>
+                      ) : (
+                        <>
+                          <Lock className="h-4 w-4 transition-transform group-hover:scale-110" />
+                          Continuar para Pagamento
+                          <ChevronRight className="ml-auto h-4 w-4 transition-transform group-hover:translate-x-0.5" />
+                        </>
+                      )}
+                    </Button>
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </motion.div>
 
-            {/* ─── Initiating Spinner (auto-initiate in background) ──── */}
-            <AnimatePresence>
-              {phase === 'initiating' && (
-                <motion.div
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -5 }}
-                  transition={{ duration: 0.3 }}
-                  className="mt-4 flex items-center justify-center gap-2 rounded-2xl border border-gray-100 bg-white px-4 py-5 text-sm text-gray-500 shadow-sm"
-                >
-                  <Loader2 className="h-4 w-4 animate-spin" style={{ color: brandColor }} />
-                  <span>{tr.preparingPayment}</span>
-                </motion.div>
-              )}
-            </AnimatePresence>
-
-            {/* ─── Payment Zone (revealed via Progressive Disclosure) ── */}
+            {/* ─── Payment Zone (revealed after manual initiate) ─────────── */}
             <AnimatePresence>
               {phase === 'paying' && paymentResponse && (
                 <motion.div
