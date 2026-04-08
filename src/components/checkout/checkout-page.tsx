@@ -404,12 +404,12 @@ export default function CheckoutPage() {
     country: '',
   });
   const [saving, setSaving] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [paymentResponse, setPaymentResponse] = useState<PaymentInitiateResponse | null>(null);
   const sumUpInitiatedRef = useRef(false);
 
   const isMountedRef = useRef(true);
-  const initiateCalledRef = useRef(false);
 
   // ─── Cleanup on unmount ────────────────────────────────────────────────────
   useEffect(() => {
@@ -491,49 +491,43 @@ export default function CheckoutPage() {
     [debouncedSave, session]
   );
 
-  // ─── Progressive Disclosure: auto-initiate when name + email are valid ──
-  const canAutoInitiate =
+  // ─── Form validation ────────────────────────────────────────────────────
+  const isFormValid =
     form.customer_name.trim().length >= 2 &&
     isValidEmail(form.customer_email);
 
-  useEffect(() => {
-    if (!canAutoInitiate || !session || !session.id) return;
-    // Don't re-initiate if already done
-    if (initiateCalledRef.current || paymentResponse) return;
-    // Don't initiate if in a terminal phase
-    if (phase !== 'form') return;
+  const handleInitiatePayment = useCallback(async () => {
+    if (!isFormValid || !session?.id || isLoading) return;
 
-    let cancelled = false;
-    initiateCalledRef.current = true;
+    setErrorMsg('');
+    setPaymentResponse(null);
+    sumUpInitiatedRef.current = false;
+    setIsLoading(true);
     startTransition(() => setPhase('initiating'));
 
-    initiatePayment(session.id)
-      .then((result) => {
-        if (cancelled || !isMountedRef.current) return;
+    try {
+      const result = await initiatePayment(session.id);
+      if (!isMountedRef.current) return;
 
-        if (result.provider === 'stripe' && result.client_secret) {
-          setPaymentResponse(result);
-          setPhase('paying');
-        } else if (result.provider === 'sumup' && result.checkout_id) {
-          setPaymentResponse(result);
-          setPhase('paying');
-        } else {
-          // Fallback: unknown provider
-          setPhase('form');
-          setErrorMsg('Unsupported payment provider configuration.');
-        }
-      })
-      .catch((err) => {
-        if (cancelled || !isMountedRef.current) return;
-        console.error('[Checkout] Auto-initiate error:', err);
+      if (result.provider === 'stripe' && result.client_secret) {
+        setPaymentResponse(result);
+        setPhase('paying');
+      } else if (result.provider === 'sumup' && result.checkout_id) {
+        setPaymentResponse(result);
+        setPhase('paying');
+      } else {
         setPhase('form');
-        setErrorMsg(tr.paymentFailedMsg);
-        // Allow retry
-        initiateCalledRef.current = false;
-      });
-
-    return () => { cancelled = true; };
-  }, [canAutoInitiate, session, paymentResponse, phase, tr.paymentFailedMsg]);
+        setErrorMsg('Unsupported payment provider configuration.');
+      }
+    } catch (err) {
+      if (!isMountedRef.current) return;
+      console.error('[Checkout] Initiate payment error:', err);
+      setPhase('form');
+      setErrorMsg(tr.paymentFailedMsg);
+    } finally {
+      if (isMountedRef.current) setIsLoading(false);
+    }
+  }, [isFormValid, isLoading, session, tr.paymentFailedMsg]);
 
   // ─── Handle SumUp card mount (only once when phase is paying + provider is sumup) ──
   useEffect(() => {
@@ -589,7 +583,6 @@ export default function CheckoutPage() {
   const handleRetry = useCallback(() => {
     setPhase('loading');
     setErrorMsg('');
-    initiateCalledRef.current = false;
     if (txId) {
       fetchCheckoutSession(txId)
         .then((data) => { setSession(data); setPhase('form'); })
@@ -830,9 +823,17 @@ export default function CheckoutPage() {
                   )}
                 </AnimatePresence>
               </div>
+
+              <Button
+                onClick={handleInitiatePayment}
+                disabled={!isFormValid || isLoading}
+                className="mt-4 w-full"
+              >
+                {isLoading ? 'A Processar...' : 'Continuar para Pagamento'}
+              </Button>
             </motion.div>
 
-            {/* ─── Initiating Spinner (auto-initiate in background) ──── */}
+            {/* ─── Initiating Spinner ─────────────────────────────────── */}
             <AnimatePresence>
               {phase === 'initiating' && (
                 <motion.div
